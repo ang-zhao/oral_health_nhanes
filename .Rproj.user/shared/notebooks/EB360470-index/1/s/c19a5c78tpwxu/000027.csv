@@ -1,0 +1,3 @@
+"0","# Missing data"
+"0","library(DataExplorer)"
+"0","missing = plot_missing(select(data,  c(""Age"", ""Gender"", ""Education"", ""Smoking Status"", ""Alcohol Use"", ""Diabetes"", ""Oral Health Issues""))) "

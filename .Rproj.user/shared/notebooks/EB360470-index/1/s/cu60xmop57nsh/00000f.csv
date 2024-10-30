@@ -1,0 +1,5 @@
+"0","# Define the path to the SQLite database"
+"0","db_path <- here(""data"", ""nhanes_wave_i.sqlite"")"
+"0",""
+"0","# Connect to the SQLite database"
+"0","con <- DBI::dbConnect(RSQLite::SQLite(), dbname = db_path)"

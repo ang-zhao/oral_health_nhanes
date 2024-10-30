@@ -1,0 +1,421 @@
+---
+title: "NHANES Project"
+execute: 
+  warning: false
+  echo: false
+format: pdf
+editor: visual
+author: "Angela Zhao"
+date: 08-18-2024
+---
+
+```{r setup, include=FALSE}
+# Load necessary libraries
+library(here)
+library(DBI)
+library(dplyr)
+library(dbplyr)
+library(RSQLite)
+library(ggplot2)
+library(knitr)
+library(tidyr)
+library(forcats)
+library(tableone)
+```
+
+# Introduction
+
+The purpose of this analysis is to investigate the relationships between certain health behaviors and conditions in the U.S. population using data from the National Health and Nutrition Examination Survey (NHANES). Specifically, the analysis aims to explore associations between smoking, alcohol use, diabetes, and oral health issues, adjusting for demographic factors where appropriate. The NHANES data, which combines interviews and physical examinations, provides a comprehensive overview of health and nutritional status among U.S. adults and children.
+
+# Data
+
+The data used for this project comes from Wave I (2015-2016) of NHANES, a survey conducted by the Centers for Disease Control and Prevention (CDC). The public release of Wave I included a total of 9971 participants between 0 and 150 years old. Participants 80 years and older were all coded as 80 years old. Extensive sociodemographic, disease, clinical, lifestyle, and overall health data were collected. We take a subset of the data field, including information on smoking and alcohol consumption, diabetes diagnosis, and oral health issues. Demographic variables such as age, gender, and education level are also included. Some data fields had high levels of missingness (40-50%), which was a key consideration throughout our analysis. We will discuss this further in the methods and results sections.
+
+We define the data fields of interest as follows:
+
+- Alcohol use (ALQ101): Had at least 12 alcohol drinks/1 year.
+
+- Diabetes status (DIQ010): Doctor told you have diabetes (group borderline as yes)
+
+- Ever smoker (SMQ020): Smoked at least 100 cigarettes in life?
+
+- Oral health issue (OHAREC): If you are recommended care other than “Continue your regular routine care”
+
+- Age (RIDAGEYR): Age in years of the participant at the time of screening. Individuals 80 and over are topcoded at 80 years of age.
+
+- Gender (RIAGENDR): Gender of the participant.
+
+- Education (DMDEDUC2): Education level - Adults 20+
+
+- Told the benefits of giving up cigarettes (OHQ610): "In the past 12 months, did a dentist, hygienist or other dental professional have a direct conversation with you about the benefits of giving up cigarettes or other types of tobacco to improve your dental health?"
+
+# Methods
+
+## Data Processing
+
+Data exploration began with examining the completeness of our variables.  Using SQL, we can directly query the database. For example, we can ask the data base for the counts of missing values for diabetes and alcohol. (Code included since the instructions specifically asked us to use SQL queries.) These queries tell us that there are a total of 9575 diabetes status records, of which none are missing. On the other hand, there are a total of 5735 smoking status records, of which 527 are missing. The high missingness meant that we should explore the code books and data collection process to explain the missingness, and imputation methods would not be possible or reasonable.
+
+Data was then prepared for analysis. We joined relevant tables from an SQLite database of the Wave I data to create a data frame comprising demographic and health variables of interest. Variables such as smoking status, alcohol use, and diabetes status were recoded into categorical factors for analysis. Participants that refused to answer, did not know, or had missing data for any data field were assigned NA for that data field.
+
+Figure @fig-missing1 shows the proportion of missing data for each variable in the full data set of 9971 participants. Around 40-50% of the participants are missing Education, Smoking Status and Alcohol Use data. We would not be able to proceed with our analyses and produce reliable results from this data. Upon closer inspection, we first notice that by definition, education only includes data from participants 20 years and older. Furthermore, NHANES only collected smoking and alcohol data from participants 18 years and older as well. Importantly, in the U.S., only adults 21 years and older are allowed to purchase alcohol or cigarettes. To better understand the missingness in this data set, we look only at adults 21 years and older (@fig-missing2). Here, the proportion of missing data seems much more reasonable. However, because the missingness for alcohol use and oral health issues is greater than 10%, imputation may not be suitable.
+
+The data was filtered to include participants aged 21 years and older, as smoking and alcohol use data were only available for adults and to better align with legal age requirements for alcohol and cigarette use in the U.S. A summary of the characteristics of participants in this subset were included (@tbl-tab1).
+
+
+
+```{r}
+# Define the path to the SQLite database
+db_path <- here("data", "nhanes_wave_i.sqlite")
+
+# Connect to the SQLite database
+con <- DBI::dbConnect(RSQLite::SQLite(), dbname = db_path)
+```
+
+```{r}
+# List tables in the database
+tables <- dbListTables(con)
+```
+
+```{r}
+# Create tbl objects for the relevant tables
+demographics <- tbl(con, "DEMO_I")
+smoking <- tbl(con, "SMQ_I")
+alcohol <- tbl(con, "ALQ_I")
+diabetes <- tbl(con, "DIQ_I")
+oral_health <- tbl(con, "OHXREF_I")
+benefit_quit <- tbl(con, "OHQ_I")
+
+# Join the tables on SEQN and select relevant variables
+data_raw <- demographics %>%
+  select(SEQN, Age = RIDAGEYR, GenderCode = RIAGENDR, EducationCode = DMDEDUC2) %>%
+  left_join(smoking %>% select(SEQN, SmokingStatusCode = SMQ020), by = "SEQN") %>%
+  left_join(alcohol %>% select(SEQN, AlcoholUseCode = ALQ101), by = "SEQN") %>%
+  left_join(diabetes %>% select(SEQN, DiabetesStatusCode = DIQ010), by = "SEQN") %>%
+  left_join(oral_health %>% select(SEQN, OralHealthIssueCode = OHAREC), by = "SEQN") %>%
+  left_join(benefit_quit %>% select(SEQN, BenefitQuitSmokingCode = OHQ610), by = "SEQN")  %>%
+  collect()
+data = data_raw
+```
+
+
+```{r}
+# Recode Variables: 
+# Recode Gender
+data <- data %>%
+  mutate(
+    Gender = case_when(GenderCode == "Female" ~ 1,
+                       GenderCode == "Male" ~ 2,
+                       .default = NA),
+    Gender = as.factor(Gender)
+  )
+
+# Recode Education Level
+data <- data %>%
+  mutate(
+    Education = case_when(
+      EducationCode == "Less than 9th grade" ~ 1,
+      EducationCode == "9-11th grade (Includes 12th grade with no diploma)" ~ 2,
+      EducationCode == "High school graduate/GED or equivalent" ~ 3,
+      EducationCode == "Some college or AA degree" ~ 4,
+      EducationCode == "College graduate or above" ~ 5,
+      .default = NA),
+    Education = as.factor(Education)
+  )
+
+# Recode Smoking Status
+data <- data %>%
+  mutate(
+    `Smoking Status` = case_when(
+      SmokingStatusCode == "No" ~ 1,
+      SmokingStatusCode == "Yes" ~ 2,
+      .default = NA),
+    `Smoking Status` = as.factor(`Smoking Status`)
+  )
+
+# Recode Alcohol Use
+data <- data %>%
+  mutate(
+    `Alcohol Use` = case_when(
+      AlcoholUseCode == "No" ~ 1,
+      AlcoholUseCode == "Yes" ~ 2,
+      .default = NA),
+    `Alcohol Use` = as.factor(`Alcohol Use`)
+  )
+
+# Recode Diabetes Status
+data <- data %>%
+  mutate(
+    Diabetes = case_when(
+      DiabetesStatusCode == "Yes" ~ 1,
+      DiabetesStatusCode == "Borderline" ~ 2,
+      DiabetesStatusCode == "No" ~ 3,
+      .default = NA),
+    Diabetes = as.factor(Diabetes)
+  )
+
+# Recode Oral Health Status
+data <- data %>%
+  mutate(
+    `Oral Health Issues` = case_when(
+      OralHealthIssueCode == "Continue your regular routine care" ~ 1,
+      OralHealthIssueCode == "See a dentist within the next 2 weeks" ~ 2,
+      OralHealthIssueCode == "See a dentist at your earliest convenience" ~ 3,
+      OralHealthIssueCode == "See a dentist immediately" ~ 4,
+      .default = NA), 
+    `Oral Health Issues` = as.factor(`Oral Health Issues`)
+  )
+
+# Recode Benefit of Quitting Smoking
+data <- data %>%
+  mutate(
+    `Told the benefit of quitting smoking?` = case_when(
+      BenefitQuitSmokingCode == "Yes" ~ 1,
+      BenefitQuitSmokingCode == "No" ~ 2,
+      .default = NA),
+    `Told the benefit of quitting smoking?` = as.factor(`Told the benefit of quitting smoking?`)
+  )
+```
+
+
+```{r, echo = T}
+# SELECT
+#   SUM(CASE WHEN DIQ010 IS NULL THEN 1 ELSE 0 END) AS missing_diabetes,
+#   COUNT(*) AS total_records
+# FROM DIQ_I;
+
+# SELECT
+#   SUM(CASE WHEN ALQ101 IS NULL THEN 1 ELSE 0 END) AS missing_alcohol,
+#   COUNT(*) AS total_records
+# FROM ALQ_I;
+```
+
+```{r sql-missing}
+# Counts of missing values for diabetes status using SQL
+missing_diabetes <- dbGetQuery(con, "
+SELECT
+  SUM(CASE WHEN DIQ010 IS NULL THEN 1 ELSE 0 END) AS Missing,
+  COUNT(*) AS 'Total Records'
+FROM DIQ_I;
+") 
+
+# Counts of missing values for alcohol use using SQL
+missing_alcohol <- dbGetQuery(con, "
+SELECT
+  SUM(CASE WHEN ALQ101 IS NULL THEN 1 ELSE 0 END) AS Missing,
+  COUNT(*) AS 'Total Records'
+FROM ALQ_I;
+")
+
+df = bind_rows(missing_diabetes, missing_alcohol)
+rownames(df) = c("Diabetes", "Alcohol Use")
+colnames(df) = c("Missing Recods", "Total Records")
+# kable(df, caption = "Missing Data Counts for Diabetes Status and Alcohol Use")
+```
+
+
+```{r, output = F}
+# Missing data
+library(DataExplorer)
+missing = plot_missing(select(data,  c("Age", "Gender", "Education", "Smoking Status", "Alcohol Use", "Diabetes", "Oral Health Issues"))) 
+model_data = data %>% filter(Age >= 21)
+missing_o21 = plot_missing(select(model_data, c("Age", "Gender", "Education", "Smoking Status", "Alcohol Use", "Diabetes", "Oral Health Issues"))) 
+```
+
+```{r fig-missing1}
+#| label: fig-missing1
+#| layout-ncol: 1
+#| echo: false
+#| fig-cap: "Missingness in Wave I"
+missing
+```
+
+Firstly, by definition, education only includes data from participants 20 years and older. Upon closer inspection, we notice that NHANES only collected smoking and alcohol data from participants 18 years and older as well. Importantly, in the U.S., only adults 21 years and older are allowed to purchase alcohol or cigarettes. To better understand the missingness in this data set, we look only at adults 21 years and older (@fig-missing2). Here, the proportion of missing data seems much more reasonable. However, because the missingness for alcohol use and oral health issues is greater than 10%, imputation may not be suitable.
+
+```{r fig-missing2}
+#| label: fig-missing2
+#| layout-ncol: 1
+#| echo: false
+#| fig-cap: "Missingness in Wave I, Participants 21 Years and Older Only"
+
+missing_o21
+```
+
+
+```{r}
+# Variables for Table 1
+data_raw = data_raw %>% mutate(Gender = GenderCode, Education = EducationCode, 
+                               `Smoking Status` = SmokingStatusCode, 
+                               `Alcohol Use` = AlcoholUseCode,
+                               Diabetes = DiabetesStatusCode, 
+                               `Oral Health Issues` = OralHealthIssueCode) %>% filter(Age >= 18)
+vars <- c("Age", "Gender", "Education", "Smoking Status", "Alcohol Use", "Diabetes", "Oral Health Issues")
+labels = c("Age", "Gender", "Education", "Smoking Status", "Alcohol Use", "Diabetes Status", "Oral Health Issue")
+
+# Create Table 1
+table1 <- CreateTableOne(vars = vars, data = data_raw, factorVars = vars[-1], includeNA = TRUE)
+
+```
+
+```{r tbl-tab1}
+#| tbl-cap: "Summary of Characteristics"
+kableone(table1)
+```
+
+
+## Statistical Analysis 
+
+### Hypothesis Testing
+
+We used hypothesis testing to explore the association between smoking status and whether participants were informed about the benefits of quitting smoking. We created a contingency table between the two covariates and used Pearson's Chi-squared test to evaluate this relationship between categorical variables. The null hypothesis was that there is no association between smoking status and being informed about quitting benefits, while the alternative hypothesis proposed that such an association exists. 
+
+## Regression Model
+
+To assess the impact of health behaviors on oral health outcomes, we used logistic regression modeling. The response variable was defined as a binary outcome indicating whether participants were recommended to see a dentist (i.e. oral health issue is present) or continue regular care (i.e. no oral health issue). The predictors were smoking status and alcohol use. We also controlled for age, gender, diabetes status, and education. We fitted a logistic regression model and specified the binomial family. The regression model can be expressed as follows:
+
+Let $Y = 1$ if oral health issues were present and  $Y = 0$ otherwise. Let $X_i$, $i \in {1, 2, ..., p}$ for $p$ covariates of interest. In our case, we had $6$ covariates: smoking status, alcohol use, age, gender, diabetes, and education. Diabetes had $3$ factor levels and education had $5$ factor levels. The reamining covariates had $2$ factor levels. Hence $p = 10$. $\beta_i$, $i \in {0, 1, ..., p}$ refer to the estimated coefficients for the intercept and each covariate.
+
+$$\text{logit}(P(Y = 1)) = \log\left(\frac{P(Y = 1)}{1 - P(Y = 1)}\right) = \beta_0 + \beta_1 X_1 + \beta_2 X_2 + \cdots + \beta_p X_p$$
+
+
+# Results
+
+## Population Characteristics
+
+@tbl-tab1 summarizes the characteristics of the study subset 21 years and older (n = 5992). The average age was 48.12 years (SD = 18.52), and 48.2% of participants were male. Education varied widely, with 23.7% having completed college and 11.5% with less than a ninth-grade education. Smoking was reported by 40.4% of participants, and alcohol use was reported in 58.0%. Oral health issues were present in just under half of the population, with 57.8% of participants being recommended to continue regular care and 33.3% instructed to see a dentist.
+
+## Hypothesis Testing
+
+Pearson's Chi-squared test revealed a significant association between smoking status and receiving advice on quitting smoking. @tbl-contingency is the contingency table. The p-value frorm our hypothesis testing was $5.00 \times 10^{-4}$, which means we reject the null hypothesis. This result indicates a significant association between smoking status and being advised about quitting smoking, suggesting that smokers were more likely to be counseled by healthcare professionals. 
+
+## Regression Model
+
+The logistic regression model highlighted several significant predictors of oral health issues. The AIC for the model was 5956. @fig-or shows the odds ratios resulting from our analysis and $95\%$ confidence intervals were shown for each odds ratio. A red line was drawn at 1 (i.e. no significant effect if the confidence band covers 1). Smoking status, alcohol use were both significant. After controlling for all demographic covariates, smokers were $48\%$ (OR = $1.48$, $95\%$ CI: $1.29-1.70$, p-value = $1.30 \times 10^{-8}$) more likely to report oral health issues than non-smokers, emphasizing the negative impact of tobacco on oral health. Interestingly, participants who reported alcohol use were $21\%$ less likely to report poor oral health compared to those who did not consume alcohol (OR = $0.79$, $95\%$ CI: $0.67-0.92$, p-value = $1.18 \times 10^{-3}$). This could suggest the presence of confounding factors such as higher socioeconomic status or better access to dental care among moderate drinkers. Diabetes was not found to have a significant association with oral health.
+
+For each additional year of age above 21 years old, participants were $1\%$ less likely to report oral health issues (OR = $0.99$, $95\%$ CI: $0.98-0.99$, p-value = $8.13 \times 10^{-6}$), suggesting that older participants, while generally more prone to health issues, may also have better-managed oral health due to more consistent healthcare access and to prioritization of oral health. This is visualized in @fig-age, which shows the relationship betwen oral health issues and age. Firstly, the bars indicate the proportion of participants at each age between 21 and 80+ that have oral health issues.The jittered black dots at the top of the graph plot all the participants with oral health issues at each age and the jittered black points at the bottom of the graph plot all the participants without oral health issues at each age. The smooth blue line and grey ribbons was obtained from glm smoothing with binomial family specified and shows the probability of having oral health issues at each age along with the $95\%$ confidence interval. The demographic covariates that we controlled for (age, gender, and education) were also significant. As our regression odds ratio suggests, the risk of having an oral health decreases slightly with age.
+
+Men were also $31\%$ more likely to report oral health issues compared to women (OR = $1.31$, $95\%$ CI: $1.14-1.50$, p-value = $5.16 \times 10^{-5}$). Amongst the education categories, participants with some college or an AA degree were $35\%$ less likely to report oral health issues compared to those with less education (OR = $0.65$, $95\%$ CI: $0.53-0.79$, p-value = $4.59 \times 10^{-5}$), while college graduates were $68\%$ less likely to report oral health issues (OR = $0.32$, $95\%$ CI: $0.26-0.39$, p-value < $2.00 \times 10^{-16}$) compared to those with less education. This highlights the importance of health literacy and awareness in maintaining oral health. 
+
+
+
+```{r tbl-contingency}
+#| label: tbl-contingency
+#| layout-ncol: 1
+#| echo: false
+#| tbl-cap: "Contingency Table for Smoking Status v.s. If the Participant was Told the Benefit of Quitting Smoking"
+
+# Create contingency table
+smoking_benefit_table <- table(data$SmokingStatusCode, data$BenefitQuitSmokingCode, useNA = "ifany")
+kable(smoking_benefit_table)
+```
+
+
+```{r}
+# Perform Chi-squared test
+chi_test <- chisq.test(smoking_benefit_table, simulate.p.value = TRUE)
+chi_test
+
+```
+
+```{r}
+# Prepare data for modeling
+model_data = data %>% filter(Age >= 21) %>% 
+  mutate(`Oral Health Issues (Binary)` = case_when(`Oral Health Issues` == 1 ~ 0,
+                                    `Oral Health Issues` != 1 ~ 1,
+                                    .default = NA)) 
+
+# Fit logistic regression model
+model <- glm(`Oral Health Issues (Binary)` ~ `Smoking Status` + `Alcohol Use` + 
+               Age + Gender + Diabetes + Education, 
+             data = model_data, family = "binomial")
+# 
+# # Model summary
+# summary(model)
+
+```
+
+```{r}
+# Extract tidy model summary with confidence intervals
+library(broom)
+model_coef <- tidy(model, conf.int = TRUE)
+# Remove the intercept term
+model_coef <- model_coef %>%
+  filter(term != "(Intercept)")
+
+# Adjust term names for readability (optional)
+model_coef <- model_coef %>%
+  mutate(term = recode(term,
+                       # Adjust according to your variable names
+                       "`Smoking Status`2" = "Smoking Status: Yes",
+                       "`Alcohol Use`2" = "Alcohol Use: Yes",
+                       "Gender2" = "Gender:Male",
+                       "Diabetes2" = "Diabetes: Borderline",
+                       "Diabetes3" = "Diabetes: No",
+                       "Education2" = "9-11th Grade (Includes 12th Grade With No Diploma)",
+                       "Education3" = "High School Grad/GED or Equivalent",
+                       "Education4" = "Some College or AA Degree",
+                       "Education5" = "College Graduate or Above"))
+
+model_coef = model_coef[-3,]
+model_coef$order = 1:9
+
+# Reorder terms for plotting
+model_coef <- model_coef %>%
+  mutate(term = fct_reorder(term, desc(order)))
+
+odds_ratio = ggplot(model_coef, aes(x = exp(estimate), y = term)) +
+  geom_point() +
+  geom_errorbarh(aes(xmin = exp(conf.low), xmax = exp(conf.high)), height = 0.2) +
+  geom_vline(xintercept = 1, linetype = "dotted", color = "red") +
+  labs(title = "Effect of Predictors on Oral Health Issues",
+       x = "Odds Ratio Estimate", y = ""
+       #,y = "Predictor Variables"
+       ) +
+  theme_minimal()
+
+```
+
+```{r fig-or}
+#| label: fig-or
+#| layout-ncol: 1
+#| echo: false
+#| fig-cap: "Odds Ratios Obtained From Logistic Regression Model (Binomial Family)"
+odds_ratio
+```
+
+```{r}
+d = model_data %>% 
+  group_by(Age, `Oral Health Issues (Binary)`) %>% 
+  summarise(count = n()) %>% 
+  mutate(perc = count/sum(count)) %>% filter(`Oral Health Issues (Binary)` == 1)
+
+perc_model_data = inner_join(model_data, select(d, "Age", "perc"), by = "Age")
+
+# Plot
+oral_v_age = ggplot(perc_model_data, aes(x = Age, y = `Oral Health Issues (Binary)`)) +
+  geom_point(alpha = 0.1, position=position_jitter(width=0.1, height=0.1)) +
+  geom_smooth(method="glm",
+    method.args=list(family="binomial")) +
+  geom_bar(aes(x = Age, y = perc), stat = "summary", fill = "steelblue") +
+  labs(
+    title = "Proportion of People with Oral Health Issues by Age",
+    x = "Age Group",
+    y = "Oral Health Issues"
+  ) +
+  theme_classic()
+
+```
+
+
+```{r fig-age}
+#| label: fig-age
+#| layout-ncol: 1
+#| echo: false
+#| fig-cap: "Associations Between Oral Health Issues and Age"
+oral_v_age
+```
+
+# Conclusion
+
+This analysis of NHANES data underscores significant associations between smoking, alcohol use, and oral health outcomes. Smoking is a well-known major risk factor for poor oral health and our results confirm this. We emphasize the need for targeted smoking cessation programs. Furthermore, being told the benefits of quitting smoking is significantly associated with smoking status. This suggests that actively engaging with smokers to discuss cessation can is an actionable intervention, which is a positive finding from a public health perspective. Meanwhile, alcohol use was associated with somewhat better oral health outcomes. This is a unexpected because the literature suggests that alcohol is a risk factor for poor oral health. Though, this may be influenced by other lifestyle or socioeconomic factors that we did not account for. Diabetes was also not significantly associated with oral health issues, which differs from the literature. Amongst other things, this may be partially explained by glycemic control. We do not have information on glycemic control (e.g., HbA1c levels) for every participant. Poor glycemic control is more likely to contribute to oral health issues like periodontitis. If participants with diabetes have well-managed glucose levels, they may not exhibit the expected negative impact on oral health, leading to a weaker or non-significant association in this analysis. Age and education level also played significant roles, with older individuals and those with lower education being more at risk for dental issues.
+
+Even after subsetting the population to 21 years and older, we still had substantial missing data ($> 10\%$). This limits the robustness of these findings. Future efforts should look for explanations for variables with higher missingness and investigate if there are ways to account for or impute them. We should also expand the study to account for socioeconomic factors. Nevertheless, the insights from this study reinforce the need for public health initiatives to improve oral health, focused on smoking cessation, health education, and increased access to dental care, particularly for vulnerable populations.

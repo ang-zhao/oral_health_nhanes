@@ -1,0 +1,2 @@
+"0","model_data = data %>% filter(Age >= 21)"
+"0","missing_o21 = plot_missing(select(model_data, c(""Age"", ""Gender"", ""Education"", ""Smoking Status"", ""Alcohol Use"", ""Diabetes"", ""Oral Health Issues""))) "

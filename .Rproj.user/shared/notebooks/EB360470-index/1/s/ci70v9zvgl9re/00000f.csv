@@ -1,0 +1,2 @@
+"0","# List tables in the database"
+"0","tables <- dbListTables(con)"
